@@ -1,0 +1,185 @@
+name: GALACTUS PWA - Universal Verification
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify Project
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show repository information
+        run: |
+          echo "GALACTUS PWA Universal Verification"
+          echo "Branch: $GITHUB_REF_NAME"
+          echo "Commit: $GITHUB_SHA"
+          echo "Repository files:"
+          find . -maxdepth 3 -type f \
+            ! -path './.git/*' | sort | head -200
+
+      - name: Validate ZIP archives
+        shell: bash
+        run: |
+          set -e
+          found=0
+
+          while IFS= read -r -d '' file; do
+            found=1
+            echo "Checking ZIP: $file"
+            unzip -t "$file"
+          done < <(
+            find . -type f -name '*.zip' \
+              -not -path './.git/*' -print0
+          )
+
+          if [ "$found" -eq 0 ]; then
+            echo "No ZIP archives found; skipping."
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check Python syntax
+        shell: bash
+        run: |
+          set -e
+          found=0
+
+          while IFS= read -r -d '' file; do
+            found=1
+            echo "Checking Python: $file"
+            python -m py_compile "$file"
+          done < <(
+            find . -type f -name '*.py' \
+              -not -path './.git/*' \
+              -not -path '*/.venv/*' \
+              -not -path '*/venv/*' -print0
+          )
+
+          if [ "$found" -eq 0 ]; then
+            echo "No Python files found; skipping."
+          fi
+
+      - name: Run Python unittest tests
+        shell: bash
+        run: |
+          set -e
+          mapfile -t test_dirs < <(
+            find . -type f \
+              \( -name 'test_*.py' -o -name '*_test.py' \) \
+              -not -path './.git/*' \
+              -not -path '*/.venv/*' \
+              -not -path '*/venv/*' \
+              -printf '%h\n' | sort -u
+          )
+
+          if [ "${#test_dirs[@]}" -eq 0 ]; then
+            echo "No Python unittest files found; skipping."
+            exit 0
+          fi
+
+          for dir in "${test_dirs[@]}"; do
+            echo "Discovering tests in: $dir"
+            python -m unittest discover \
+              -s "$dir" -p 'test*.py' -v
+          done
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check JavaScript syntax
+        shell: bash
+        run: |
+          set -e
+          found=0
+
+          while IFS= read -r -d '' file; do
+            found=1
+            echo "Checking JavaScript: $file"
+            node --check "$file"
+          done < <(
+            find . -type f \
+              \( -name '*.js' -o -name '*.mjs' \) \
+              -not -path './.git/*' \
+              -not -path '*/node_modules/*' \
+              -not -path '*/.venv/*' -print0
+          )
+
+          if [ "$found" -eq 0 ]; then
+            echo "No JavaScript files found; skipping."
+          fi
+
+      - name: Run npm tests when configured
+        shell: bash
+        run: |
+          set -e
+
+          while IFS= read -r -d '' file; do
+            dir="$(dirname "$file")"
+
+            if node -e \
+              "process.exit(require('./$file').scripts?.test ? 0 : 1)"
+            then
+              echo "Running npm test in: $dir"
+              (
+                cd "$dir"
+                npm install --ignore-scripts
+                npm test -- --if-present
+              )
+            else
+              echo "No npm test script in $file; skipping."
+            fi
+          done < <(
+            find . -type f -name 'package.json' \
+              -not -path './.git/*' \
+              -not -path '*/node_modules/*' -print0
+          )
+
+      - name: Verify PWA manifest JSON
+        shell: bash
+        run: |
+          set -e
+          found=0
+
+          while IFS= read -r -d '' file; do
+            found=1
+            echo "Validating manifest: $file"
+            python -m json.tool "$file" > /dev/null
+          done < <(
+            find . -type f \
+              \( -name 'manifest.json' \
+                 -o -name 'manifest.webmanifest' \) \
+              -not -path './.git/*' -print0
+          )
+
+          if [ "$found" -eq 0 ]; then
+            echo "No PWA manifest found; skipping."
+          fi
+
+      - name: Verification summary
+        if: always()
+        run: |
+          echo "## GALACTUS PWA Verification" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Branch: $GITHUB_REF_NAME" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Review each previous step for its actual result." \
+            >> "$GITHUB_STEP_SUMMARY"
+          echo "- Skipped checks are not passing tests." \
+            >> "$GITHUB_STEP_SUMMARY"
+          echo "- This workflow does not prove live AI inference or physical-device compatibility." \
+            >> "$GITHUB_STEP_SUMMARY"
