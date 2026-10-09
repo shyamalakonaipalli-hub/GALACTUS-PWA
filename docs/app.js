@@ -1,0 +1,46 @@
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => [...document.querySelectorAll(s)];
+const STORAGE_KEY = 'galactus-pwa-foundation-conversations-v1';
+let messages = loadMessages();
+let attachment = null;
+let deferredInstallPrompt = null;
+function loadMessages(){ try { const value=JSON.parse(localStorage.getItem(STORAGE_KEY)||'[]'); return Array.isArray(value)?value:[]; } catch { return []; } }
+function saveMessages(){ try { localStorage.setItem(STORAGE_KEY, JSON.stringify(messages)); } catch { alert('Browser storage is full or unavailable. Export your conversations before continuing.'); } }
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function renderMessages(){ const root=$('#messages'); root.innerHTML=messages.map(m=>`<div class="message ${m.role==='user'?'user':'assistant'}">${m.role==='assistant'?'<div class="avatar">G</div>':''}<div class="bubble">${escapeHtml(m.text)}</div>${m.role==='user'?'<div class="avatar">U</div>':''}</div>`).join(''); $('#welcome').style.display=messages.length?'none':''; $('#chatScroll').scrollTop=$('#chatScroll').scrollHeight; }
+function addMessage(role,text){ messages.push({role,text,at:new Date().toISOString()}); saveMessages(); renderMessages(); }
+function navigate(view){ $$('.view').forEach(el=>el.classList.toggle('active',el.id===`view-${view}`)); $$('.nav-item').forEach(el=>el.classList.toggle('active',el.dataset.view===view)); const titles={chat:'Conversation',models:'Model manager',memory:'Memory manager',security:'Security & privacy'}; $('#topTitle').textContent=titles[view]||'GALACTUS'; $('#sidebar').classList.remove('open'); }
+$$('.nav-item').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.view)));
+$('#menuToggle').addEventListener('click',()=>$('#sidebar').classList.toggle('open'));
+$('#newChat').addEventListener('click',()=>{messages=[];saveMessages();renderMessages();navigate('chat');$('#promptInput').focus();});
+let requestInFlight = false;
+async function submitPrompt(text){
+  const clean=text.trim(); if((!clean&&!attachment)||requestInFlight)return;
+  let body=clean; if(attachment)body+=(body?'\n\n':'')+'[Selected image: '+attachment.name+']';
+  addMessage('user',body); attachment=null; $('#attachmentPreview').hidden=true; $('#attachmentPreview').textContent=''; $('#promptInput').value=''; resizeInput();
+  const history = messages.filter(m=>m.role==='user'||m.role==='assistant').map(m=>({role:m.role,content:m.text}));
+  const pending={role:'assistant',text:'Connecting to the configured AI backend…',at:new Date().toISOString(),pending:true};
+  messages.push(pending); saveMessages(); renderMessages(); requestInFlight=true; $('#voiceStatus').textContent='AI request in progress…';
+  try { const reply=await window.GalactusRuntime.chat(history,'auto'); const index=messages.indexOf(pending); if(index>=0)messages[index]={role:'assistant',text:reply,at:new Date().toISOString()}; }
+  catch(error){ const index=messages.indexOf(pending); const message='AI request failed: '+error.message+' No answer was fabricated.'; if(index>=0)messages[index]={role:'assistant',text:message,at:new Date().toISOString()}; }
+  finally { requestInFlight=false; saveMessages(); renderMessages(); $('#voiceStatus').textContent='Enter to send · Shift+Enter for a new line'; }
+}
+$('#chatForm').addEventListener('submit',e=>{e.preventDefault();submitPrompt($('#promptInput').value);});
+$('#promptInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('#chatForm').requestSubmit();}});
+$('#promptInput').addEventListener('input',resizeInput);
+function resizeInput(){const el=$('#promptInput');el.style.height='auto';el.style.height=Math.min(el.scrollHeight,160)+'px';}
+$$('.suggestion').forEach(b=>b.addEventListener('click',()=>{navigate('chat');$('#promptInput').value=b.dataset.prompt;resizeInput();$('#promptInput').focus();}));
+$('#attachBtn').addEventListener('click',()=>$('#imageInput').click());
+$('#imageInput').addEventListener('change',e=>{const file=e.target.files&&e.target.files[0];if(!file)return;attachment={name:file.name,type:file.type};$('#attachmentPreview').textContent=`Selected: ${file.name} — image analysis is not connected.`;$('#attachmentPreview').hidden=false;e.target.value='';});
+$('#voiceBtn').addEventListener('click',()=>{const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR){$('#voiceStatus').textContent='Speech recognition is not supported by this browser.';return;}try{const rec=new SR();rec.lang=navigator.language||'en-US';rec.interimResults=false;$('#voiceStatus').textContent='Listening… grant microphone permission if asked.';rec.onresult=e=>{$('#promptInput').value=e.results[0][0].transcript;resizeInput();$('#voiceStatus').textContent='Speech captured. Review before sending.';};rec.onerror=e=>{$('#voiceStatus').textContent='Voice input unavailable: '+e.error;};rec.onend=()=>{if($('#voiceStatus').textContent==='Listening… grant microphone permission if asked.')$('#voiceStatus').textContent='Enter to send · Shift+Enter for a new line';};rec.start();}catch{$('#voiceStatus').textContent='Could not start speech recognition in this browser.';}});
+$('#exportBtn').addEventListener('click',()=>{const blob=new Blob([JSON.stringify({exportedAt:new Date().toISOString(),messages},null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='galactus-pwa-conversations.json';a.click();URL.revokeObjectURL(url);});
+$('#clearBtn').addEventListener('click',()=>{if(confirm('Delete all locally saved GALACTUS PWA conversation history from this browser?')){messages=[];saveMessages();renderMessages();}});
+function setRuntimeStatus(text, good=false){const el=$('#runtimeStatus');if(el){el.textContent=text;el.classList.toggle('good',good);}}
+const backendInput=$('#backendUrl');
+if(backendInput){backendInput.value=window.GalactusRuntime.readBaseUrl();}
+$('#saveBackendBtn')?.addEventListener('click',()=>{try{const value=window.GalactusRuntime.saveBaseUrl(backendInput.value);backendInput.value=value;setRuntimeStatus(value?'Backend URL saved in this browser. Connection is not yet verified.':'Backend URL cleared. AI requests are disabled.',false);}catch(error){setRuntimeStatus(error.message,false);}});
+$('#testBackendBtn')?.addEventListener('click',async()=>{try{setRuntimeStatus('Testing /api/health…');const result=await window.GalactusRuntime.health();setRuntimeStatus('Connected. Backend health check passed'+(result.name?' ('+result.name+')':'')+'.',true);}catch(error){setRuntimeStatus('Connection failed: '+error.message,false);}});
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;$('#installBtn').hidden=false;});
+$('#installBtn').addEventListener('click',async()=>{if(!deferredInstallPrompt)return;deferredInstallPrompt.prompt();await deferredInstallPrompt.userChoice;deferredInstallPrompt=null;$('#installBtn').hidden=true;});
+if('serviceWorker' in navigator && (location.protocol==='https:'||location.hostname==='localhost'))window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+renderMessages();
